@@ -2,7 +2,7 @@
 """
 Market context detection for LLM prompts.
 
-Detects the market (A-shares, HK, US) from a stock code and returns
+Detects the market (A-shares, HK, US, global) from a stock code and returns
 market-specific role descriptions so prompts are not hardcoded to a
 single market.
 
@@ -17,7 +17,7 @@ def detect_market(stock_code: Optional[str]) -> str:
     """Detect market from stock code.
 
     Returns:
-        One of 'cn', 'hk', 'us', or 'cn' as fallback.
+        One of 'cn', 'hk', 'us', 'global', or 'cn' as fallback.
     """
     if not stock_code:
         return "cn"
@@ -33,6 +33,14 @@ def detect_market(stock_code: Optional[str]) -> str:
     # 5-digit pure numbers are HK (A-shares are 6-digit)
     if code.isdigit() and len(code) == 5:
         return "hk"
+
+    try:
+        from data_provider.base import is_yfinance_native_symbol
+
+        if is_yfinance_native_symbol(code):
+            return "global"
+    except Exception:
+        pass
 
     # US stocks: 1-5 uppercase letters (AAPL, TSLA, GOOGL)
     # Also handles suffixed forms like BRK.B
@@ -57,6 +65,10 @@ _MARKET_ROLES = {
     "us": {
         "zh": "美股",
         "en": "US stock",
+    },
+    "global": {
+        "zh": "全球市场",
+        "en": "global market instrument",
     },
 }
 
@@ -89,6 +101,16 @@ _MARKET_GUIDELINES = {
         "en": (
             "- This analysis covers a **US stock** (listed on NYSE/NASDAQ).\n"
             "- US stocks have no daily price limits (but have circuit breakers), allow T+0 and pre/after-market trading. Consider USD FX, Fed policy, and SEC regulations."
+        ),
+    },
+    "global": {
+        "zh": (
+            "- 本次分析对象为 **全球市场标的**（可能是非中港美股票、ETF/REIT 或外汇）。\n"
+            "- 不要套用 A 股涨跌停、T+1 或单一交易所规则；请结合标的所在市场、交易货币、汇率和流动性进行分析。"
+        ),
+        "en": (
+            "- This analysis covers a **global market instrument** (possibly a non-CN/HK/US equity, ETF/REIT, or FX pair).\n"
+            "- Do not apply A-share price-limit, T+1, or single-exchange assumptions. Consider the instrument's venue, currency, FX exposure, and liquidity."
         ),
     },
 }

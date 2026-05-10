@@ -90,6 +90,23 @@ class TestFetchYfTickerData(unittest.TestCase):
         self.assertEqual(result['change_pct'], 0.0)
 
 
+class TestYfinanceNativeSymbolConversion(unittest.TestCase):
+    """Yahoo Finance 原生符号转换测试"""
+
+    def setUp(self):
+        from data_provider.yfinance_fetcher import YfinanceFetcher
+        self.fetcher = YfinanceFetcher()
+
+    def test_keeps_sgx_symbol(self):
+        self.assertEqual(self.fetcher._convert_stock_code("C38U.SI"), "C38U.SI")
+
+    def test_converts_plain_fx_pair_to_yahoo_symbol(self):
+        self.assertEqual(self.fetcher._convert_stock_code("JPYHKD"), "JPYHKD=X")
+
+    def test_keeps_yahoo_fx_pair(self):
+        self.assertEqual(self.fetcher._convert_stock_code("JPYHKD=X"), "JPYHKD=X")
+
+
 class TestGetUsMainIndices(unittest.TestCase):
     """_get_us_main_indices 美股指数批量获取测试"""
 

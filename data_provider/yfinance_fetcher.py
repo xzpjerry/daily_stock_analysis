@@ -31,7 +31,14 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code
+from .base import (
+    BaseFetcher,
+    DataFetchError,
+    STANDARD_COLUMNS,
+    is_bse_code,
+    is_fx_pair_code,
+    is_yfinance_native_symbol,
+)
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
 
@@ -109,6 +116,16 @@ class YfinanceFetcher(BaseFetcher):
         if yf_symbol:
             logger.debug(f"识别为美股指数: {code} -> {yf_symbol}")
             return yf_symbol
+
+        # Yahoo Finance 原生代码：SGX/其他交易所后缀、外汇 =X 等
+        if is_fx_pair_code(code):
+            pair = code[:-2] if code.endswith("=X") else code
+            yf_code = f"{pair}=X"
+            logger.debug(f"识别为外汇代码: {code} -> {yf_code}")
+            return yf_code
+        if is_yfinance_native_symbol(code):
+            logger.debug(f"识别为 Yahoo Finance 原生代码: {code}")
+            return code
 
         # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
         if is_us_stock_code(code):
@@ -674,14 +691,17 @@ class YfinanceFetcher(BaseFetcher):
                 index_name=index_name,
             )
 
-        # 仅处理美股股票
-        if not self._is_us_stock(stock_code):
+        is_native_symbol = is_yfinance_native_symbol(stock_code)
+
+        # 仅处理美股股票或 Yahoo Finance 原生代码
+        if not self._is_us_stock(stock_code) and not is_native_symbol:
             logger.debug(f"[Yfinance] {stock_code} 不是美股，跳过")
             return None
 
         try:
-            symbol = stock_code.strip().upper()
-            logger.debug(f"[Yfinance] 获取美股 {symbol} 实时行情")
+            symbol = self._convert_stock_code(stock_code) if is_native_symbol else stock_code.strip().upper()
+            label = "Yahoo Finance 原生标的" if is_native_symbol else "美股"
+            logger.debug(f"[Yfinance] 获取{label} {symbol} 实时行情")
 
             ticker = yf.Ticker(symbol)
 
@@ -704,6 +724,9 @@ class YfinanceFetcher(BaseFetcher):
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
                 hist = ticker.history(period='2d')
                 if hist.empty:
+                    if is_native_symbol:
+                        logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据")
+                        return None
                     logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
                     return self._get_us_stock_quote_from_stooq(symbol)
 
@@ -759,10 +782,13 @@ class YfinanceFetcher(BaseFetcher):
                 circ_mv=None,
             )
 
-            logger.info(f"[Yfinance] 获取美股 {symbol} 实时行情成功: 价格={price}")
+            logger.info(f"[Yfinance] 获取{label} {symbol} 实时行情成功: 价格={price}")
             return quote
 
         except Exception as e:
+            if is_native_symbol:
+                logger.warning(f"[Yfinance] 获取 Yahoo Finance 原生标的 {stock_code} 实时行情失败: {e}")
+                return None
             logger.warning(f"[Yfinance] 获取美股 {stock_code} 实时行情失败: {e}，尝试 Stooq 兜底")
             return self._get_us_stock_quote_from_stooq(stock_code)
 

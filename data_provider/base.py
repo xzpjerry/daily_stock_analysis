@@ -117,6 +117,20 @@ def normalize_stock_code(stock_code: str) -> str:
 
 
 ETF_PREFIXES = ("51", "52", "56", "58", "15", "16", "18")
+_FX_CURRENCY_CODES = {
+    "AUD",
+    "CAD",
+    "CHF",
+    "CNH",
+    "CNY",
+    "EUR",
+    "GBP",
+    "HKD",
+    "JPY",
+    "NZD",
+    "SGD",
+    "USD",
+}
 
 
 def _is_us_market(code: str) -> bool:
@@ -145,6 +159,42 @@ def _is_hk_market(code: str) -> bool:
     return False
 
 
+def is_fx_pair_code(code: str) -> bool:
+    """Return True for six-letter FX pairs, with or without Yahoo's =X suffix."""
+    normalized = (code or "").strip().upper()
+    if normalized.endswith("=X"):
+        normalized = normalized[:-2]
+    return (
+        len(normalized) == 6
+        and normalized[:3] in _FX_CURRENCY_CODES
+        and normalized[3:] in _FX_CURRENCY_CODES
+    )
+
+
+def is_yfinance_native_symbol(code: str) -> bool:
+    """
+    Return True for symbols that should be passed directly to Yahoo Finance.
+
+    This covers non-CN/HK/US Yahoo symbols such as SGX tickers (``C38U.SI``)
+    and FX pairs (``JPYHKD=X``). Known CN/HK suffixes stay on their existing
+    dedicated routes.
+    """
+    normalized = (code or "").strip().upper()
+    if not normalized:
+        return False
+    if normalized.endswith("=X"):
+        return is_fx_pair_code(normalized)
+    if is_fx_pair_code(normalized):
+        return True
+    if "." not in normalized:
+        return False
+
+    base, suffix = normalized.rsplit(".", 1)
+    if suffix in {"SH", "SZ", "SS", "BJ", "HK"}:
+        return False
+    return bool(base) and suffix.isalpha() and 2 <= len(suffix) <= 4
+
+
 def _is_etf_code(code: str) -> bool:
     """判定 A 股 ETF 基金代码（保守规则）。"""
     normalized = normalize_stock_code(code)
@@ -156,11 +206,13 @@ def _is_etf_code(code: str) -> bool:
 
 
 def _market_tag(code: str) -> str:
-    """返回市场标签: cn/us/hk."""
+    """返回市场标签: cn/us/hk/global."""
     if _is_us_market(code):
         return "us"
     if _is_hk_market(code):
         return "hk"
+    if is_yfinance_native_symbol(code):
+        return "global"
     return "cn"
 
 
@@ -489,7 +541,7 @@ class DataFetcherManager:
         "TushareFetcher": {"cn", "hk"},
         "PytdxFetcher": {"cn"},
         "BaostockFetcher": {"cn"},
-        "YfinanceFetcher": {"cn", "hk", "us"},
+        "YfinanceFetcher": {"cn", "hk", "us", "global"},
         "LongbridgeFetcher": {"hk", "us"},
     }
     
@@ -563,7 +615,7 @@ class DataFetcherManager:
         market: str,
     ) -> List[BaseFetcher]:
         """Skip built-in daily fetchers that are known not to support a market."""
-        if market not in {"cn", "hk", "us"}:
+        if market not in {"cn", "hk", "us", "global"}:
             return fetchers
 
         kept: List[BaseFetcher] = []
@@ -981,19 +1033,26 @@ class DataFetcherManager:
         is_us_index = is_us_index_code(stock_code)
         is_us = is_us_index or is_us_stock_code(stock_code)
         is_hk = (not is_us) and _is_hk_market(stock_code)
+        is_yf_native = (not is_us and not is_hk) and is_yfinance_native_symbol(stock_code)
         if is_hk:
             fetchers = self._filter_daily_fetchers_for_market(fetchers, "hk")
+        if is_yf_native:
+            fetchers = self._filter_daily_fetchers_for_market(fetchers, "global")
         total_fetchers = len(fetchers)
 
         # 美股（含美股指数）使用 Longbridge/YFinance 特殊路由；港股走下方通用数据源循环
-        if is_us:
+        if is_us or is_yf_native:
             prefer_lb = self._longbridge_preferred() and not is_us_index
-            source_order = (
-                ["LongbridgeFetcher", "YfinanceFetcher"]
-                if prefer_lb
-                else ["YfinanceFetcher", "LongbridgeFetcher"]
-            )
-            market_label = "美股指数" if is_us_index else "美股"
+            if is_yf_native:
+                source_order = ["YfinanceFetcher"]
+                market_label = "Yahoo Finance 原生标的"
+            else:
+                source_order = (
+                    ["LongbridgeFetcher", "YfinanceFetcher"]
+                    if prefer_lb
+                    else ["YfinanceFetcher", "LongbridgeFetcher"]
+                )
+                market_label = "美股指数" if is_us_index else "美股"
 
             for src_name in source_order:
                 for attempt, fetcher in enumerate(fetchers, start=1):
@@ -1205,8 +1264,9 @@ class DataFetcherManager:
         is_us_index = is_us_index_code(stock_code)
         is_us = is_us_index or _is_us_code(stock_code)
         is_hk = (not is_us) and _is_hk_market(stock_code)
+        is_yf_native = (not is_us and not is_hk) and is_yfinance_native_symbol(stock_code)
 
-        if is_us or is_hk:
+        if is_us or is_hk or is_yf_native:
             prefer_lb = self._longbridge_preferred() and not is_us_index
             if is_us:
                 primary_src = "LongbridgeFetcher" if prefer_lb else "YfinanceFetcher"
@@ -1214,6 +1274,12 @@ class DataFetcherManager:
                 market_label = "美股指数" if is_us_index else "美股"
                 primary_kw: dict = {}
                 secondary_kw: dict = {}
+            elif is_yf_native:
+                primary_src = "YfinanceFetcher"
+                secondary_src = ""
+                market_label = "Yahoo Finance 原生标的"
+                primary_kw = {}
+                secondary_kw = {}
             else:
                 primary_src = "LongbridgeFetcher" if prefer_lb else "AkshareFetcher"
                 secondary_src = "AkshareFetcher" if prefer_lb else "LongbridgeFetcher"
@@ -1224,9 +1290,10 @@ class DataFetcherManager:
             primary_quote = self._try_fetcher_quote(stock_code, primary_src, **primary_kw)
             if primary_quote is not None:
                 logger.info(f"[实时行情] {market_label} {stock_code} 成功获取 (来源: {primary_src})")
-            primary_quote = self._supplement_quote(
-                stock_code, primary_quote, secondary_src, **secondary_kw,
-            )
+            if secondary_src:
+                primary_quote = self._supplement_quote(
+                    stock_code, primary_quote, secondary_src, **secondary_kw,
+                )
             if primary_quote is not None:
                 return primary_quote
             if log_final_failure:
@@ -2021,7 +2088,7 @@ class DataFetcherManager:
         stock_code = normalize_stock_code(stock_code)
         market = _market_tag(stock_code)
         is_etf = _is_etf_code(stock_code)
-        if market in {"us", "hk"}:
+        if market != "cn":
             return self._build_market_not_supported(
                 market=market,
                 reason="market not supported",

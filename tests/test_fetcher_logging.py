@@ -10,7 +10,13 @@ import requests
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from data_provider.base import BaseFetcher, DataFetchError, DataFetcherManager
+from data_provider.base import (
+    BaseFetcher,
+    DataFetchError,
+    DataFetcherManager,
+    is_fx_pair_code,
+    is_yfinance_native_symbol,
+)
 from data_provider.efinance_fetcher import EfinanceFetcher
 
 
@@ -111,6 +117,28 @@ class TestFetcherLogging(unittest.TestCase):
         self.assertEqual(pytdx.calls, [])
         self.assertEqual(akshare.calls, ["HK01211"])
         self.assertEqual(yfinance.calls, [])
+
+    def test_manager_routes_yfinance_native_symbols_directly_to_yfinance(self):
+        efinance = _RecordingFetcher("EfinanceFetcher", 0)
+        akshare = _RecordingFetcher("AkshareFetcher", 1)
+        yfinance = _RecordingFetcher("YfinanceFetcher", 2)
+
+        manager = DataFetcherManager(fetchers=[efinance, akshare, yfinance])
+        df, source = manager.get_daily_data("C38U.SI", start_date="2026-05-01", end_date="2026-05-08")
+
+        self.assertFalse(df.empty)
+        self.assertEqual(source, "YfinanceFetcher")
+        self.assertEqual(efinance.calls, [])
+        self.assertEqual(akshare.calls, [])
+        self.assertEqual(yfinance.calls, ["C38U.SI"])
+
+    def test_yfinance_symbol_helpers_recognize_sgx_and_fx(self):
+        self.assertTrue(is_yfinance_native_symbol("C38U.SI"))
+        self.assertTrue(is_yfinance_native_symbol("JPYHKD=X"))
+        self.assertTrue(is_yfinance_native_symbol("JPYHKD"))
+        self.assertTrue(is_fx_pair_code("JPYHKD"))
+        self.assertFalse(is_yfinance_native_symbol("HK02800"))
+        self.assertFalse(is_yfinance_native_symbol("600519.SH"))
 
     @patch("data_provider.efinance_fetcher.get_config")
     def test_efinance_rejects_hk_daily_without_calling_eastmoney(self, mock_get_config):
